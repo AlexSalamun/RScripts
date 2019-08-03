@@ -1,0 +1,21 @@
+### First generate a sample data set
+Dates <- seq(as.Date("2016-01-01"), as.Date("2019-01-01"), by = "days")
+Groups <- sample(x=c("A","B","C","D","E","F","G"), size = 1097, replace = TRUE)
+NumIncurs <- sample(0:10, 1097, replace = TRUE)
+inc_df <- data.frame(Dates,Groups,NumIncurs)
+
+### then manipulate the data to group by
+library(dplyr)
+library(lubridate)
+inc_m <- inc_df %>%
+  group_by(month = floor_date(Dates, "month"), Groups) %>%
+  summarize(amount = sum(NumIncurs))
+
+###now plot the data
+library(ggplot2)
+inc_plot <- ggplot(inc_m, aes(x = month, y = amount))
+inc_plot <- inc_plot + facet_wrap(~ Groups)
+inc_plot <- inc_plot + geom_point() + scale_x_date(breaks = "years")
+inc_plot <- inc_plot + theme(axis.text.x=element_text(angle=-90, vjust = 0.5))
+inc_plot <- inc_plot + geom_smooth(method = "lm", se = FALSE)
+inc_plot 
