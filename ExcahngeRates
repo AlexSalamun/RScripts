@@ -1,0 +1,105 @@
+# this analysis was done using the exchange_rates.csv found https://www.kaggle.com/federalreserve/exchange-rates#exchange_rates.csv
+#import the libraries
+library(dplyr)
+library(lubridate)
+library(zoo)
+library(ggplot2)
+library(tidyr)
+library(xts)
+install.packages("padr")
+library(padr)
+
+#create a df for the exchange rates dataset
+setwd("C:/Users/Alex.Salamun/Desktop/Portfolio")
+df <- read.csv("exchange_rates.csv", header=TRUE, skip=3, na.strings=c("","NA","ND"))
+#rename columns to increase readability
+colnames(df)[2] <-  "USD per EUR"
+colnames(df)[3] <- "USD per GBP"
+colnames(df)[20] <- "Broad Dollar Index"
+colnames(df)[21] <- "Major Currencies Index"
+colnames(df)[22] <- "Other Important Partner Index"
+colnames(df)[23] <- "USD per AUD"
+colnames(df)[24] <- "USD per NZ"
+colnames(df)[1] <- "Time Period"
+#remove fields not needed
+ER <- df[-c(1,2),]
+head(ER, 1) #double check that the first row is 1971-01-04
+tail(ER,1)
+
+# identify the data types of each column
+sapply(ER, class)
+ER$`Time Period` <- as.Date(ER$`Time Period`)
+ER[,-1] <- sapply(ER[,-1], as.character) 
+#because the columns were originally factors had to convert to characters before converting to numeric
+ER[,-1] <- sapply(ER[,-1], as.numeric)
+sapply(ER, class)
+#to normalize the data let's convert the USD per X to X per USD
+colnames(ER) # this shows it's columns 2,3,23,24
+ER[,c(2,3,23,24)] <- 1/ER[,c(2,3,23,24)]
+head(ER, 5)
+ER <- ER %>% rename(EUR = `USD per EUR`, GBP = `USD per GBP`, AUD = `USD per AUD`, NZ = `USD per NZ`)
+ER_omit <- na.omit(ER) #remove all na fields
+head(ER_omit) #data now starts at 1999-01-04
+tail(ER_omit) #data ends at 2017-08-25
+
+# Dataset is now cleaned and ready to use
+# First let's do some exploratory data analysis
+ER_gather <- gather(ER_omit, "Currency", "ExchangeRate", -`Time Period`) #comment out for time-series
+
+# Exploring numerical data
+#boxplot
+ggplot(ER_gather, aes(x = Currency, y =ExchangeRate)) +
+  geom_boxplot() + 
+  coord_flip() + 
+  ggtitle("ExchangeRate Per USD BoxPlots")
+# let's remove KRW when comparing as a whole to improve accuracy
+ER_gather <- ER_gather %>% filter(Currency != 'KRW')
+
+#Create some aggregations to see the most volatile currency
+ER_agg <- ER_gather %>%
+          group_by(Currency) %>%
+          summarize(MaxER=max(ExchangeRate),
+                    MinER=min(ExchangeRate),
+                    MedER=median(ExchangeRate),
+                    IQR_ER=IQR(ExchangeRate)) %>%
+          arrange(desc(IQR_ER)) %>%
+          head()
+V1 <- ER_agg[['Currency']] #convert the dataframe into a vector
+
+#create density plots for 6 most volatile
+ER_vol <- ER_gather %>%
+          filter(Currency %in% V1) %>%
+          mutate(log_ER = log(ExchangeRate))
+ggplot(ER_vol, aes(x = log_ER, fill = Currency)) +
+  geom_density(alpha = 0.3) +
+  ggtitle("Density Plot of Most Volatile Currencies")
+
+ER_gather_plot <- ggplot(ER_gather, aes(x=`Time Period`, y = ExchangeRate, color = Currency))
+ER_gather_plot +  geom_point() + geom_smooth(method = "lm", se = FALSE) +
+  ggtitle("ExchangeRate by Currency") + xlab("Time Period") + ylab("Exchange Rate")
+
+
+# now let's do some time-series analysis 
+# first pad all missing values and fill them in with the next occuring observation
+ER_pad <- ER %>% pad() %>% fill_by_value(value)
+ER_pad <- na.locf(ER_pad, fromLast = TRUE)
+ER_ts <- ER_pad[,-1] #Remove the timeperiod column
+ER_ts <- ts(ER_ts, start = c(1971, 1), frequency = 365) #create a daily index
+# show all together
+ts.plot(ER_ts, col=1:26, xlab = "Day", ylab = "Index Value", main = "Exchange Rate by Currency")
+
+#loop through each currency to create a plot
+x<- seq_len(nrow(ER_ts))
+for (i in seq_len(ncol(ER_ts))) {
+  y <- ER_ts[,i]
+  heading <- colnames(ER_ts)[i]
+  plot(x, y, type="n", main = heading, xaxt = "n")
+  lines(x, ER_ts[,i])
+  years <- as.integer(time(ER_ts))
+  tick.posis <- seq(10, length(years), by = 100)
+  axis(1, at = tick.posis, las = 2, labels = years[tick.posis])
+}
+
+# running acf on each column shows that the ts is non-stationary
+apply(ER_ts, 2, function(acf_ts) acf(acf_ts, plot=TRUE))
+
