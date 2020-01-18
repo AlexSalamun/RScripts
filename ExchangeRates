@@ -10,7 +10,7 @@ install.packages("padr")
 library(padr)
 
 #create a df for the exchange rates dataset
-setwd("C:/Users/Alex.Salamun/Desktop/Portfolio")
+setwd("..\Desktop")
 df <- read.csv("exchange_rates.csv", header=TRUE, skip=3, na.strings=c("","NA","ND"))
 #rename columns to increase readability
 colnames(df)[2] <-  "USD per EUR"
