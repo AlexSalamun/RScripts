@@ -5,7 +5,7 @@ output:
   flexdashboard::flex_dashboard:
     orientation: rows
 ---
-  
+<!-- To run this open the LaptopSales zip folder and save the csv to your working directory --> 
 ```{r setup, include=FALSE}
 library(flexdashboard)
 library(readr)
