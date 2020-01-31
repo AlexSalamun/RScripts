@@ -1,0 +1,302 @@
+---
+title: "Laptop Sales"
+author: "Alex Salamun"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+---
+  
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(zoo)
+library(maps)
+library(mapdata)
+library(zoo)
+library(httr)
+library(raster)
+library(geosphere)
+
+postcode_lookup <- function(postcode) {
+  postcode_error <- "Please provide a valid UK postcode."
+  if (!is.character(postcode)) {
+    stop(postcode_error)
+  }
+  if (nchar(postcode) < 2) {
+    stop(postcode_error)
+  }
+  if (length(nchar(postcode)) > 1) {
+    stop("This function accepts only one postcode. For multiple requests please use bulk_postcode_lookup().")
+  }
+  r <- GET(paste0("https://api.postcodes.io/postcodes/", postcode))
+  warn_for_status(r)
+  if (status_code(r) == 200) {
+    r <- content(r)
+    pc_result <- r[["result"]]
+    take_names <- setdiff(names(pc_result), "codes")
+    pc_codes <- as.data.frame(do.call(cbind, pc_result$codes), stringsAsFactors = FALSE)
+    colnames(pc_codes) <- paste0(names(pc_codes), "_code")
+    pc_result[sapply(pc_result, is.null)] <- list(NA)
+    pc_df <- cbind(as.data.frame(pc_result[take_names],
+                                 stringsAsFactors = FALSE),
+                   pc_codes)
+    return(pc_df)
+  }
+  # if error (404) return NAs
+  if (status_code(r) == 404) {
+    print(paste("Postcode", postcode, "is incorrect or expired."))
+    pc_df <-
+      structure(list(postcode = postcode, quality = NA, eastings = NA,
+                     northings = NA, country = NA, nhs_ha = NA,
+                     longitude = NA, latitude = NA, european_electoral_region = NA,
+                     primary_care_trust = NA, region = NA, lsoa = NA,
+                     msoa = NA, incode = NA, outcode = NA,
+                     parliamentary_constituency = NA,
+                     admin_district = NA, parish = NA,
+                     admin_county = NA, admin_ward = NA, ced = NA, ccg = NA,
+                     nuts = NA, admin_district_code = NA,
+                     admin_county_code = NA, admin_ward_code = NA,
+                     parish_code = NA, parliamentary_constituency_code = NA,
+                     ccg_code = NA, ced_code = NA, nuts_code = NA),
+                class = "data.frame", row.names = c(NA, -1L))
+    return(pc_df)
+  }
+}
+
+LS <- read_csv("LaptopSales.csv")
+LS$Date <- mdy_hm(LS$Date)
+LS <- na.locf(LS, fromLast = TRUE)
+LS <- LS %>%
+  mutate(Month = format(Date, "%b"),
+         Year = year(Date),
+         Quarter = paste("Q",quarter(Date), sep="")) %>%
+  mutate(Month = factor(Month, levels = month.abb)) %>%
+  mutate(storeLat = as.numeric(paste(substr(`store X`,1,2),".",substr(`store X`,3,7),"1",sep = "")),
+       storeLon = as.numeric(paste("0.",`store Y`,"1",sep = "")),
+       CustLat = as.numeric(paste(substr(`customer X`,1,2),".",substr(`customer X`,3,7),"1",sep = "")),
+       CustLon = as.numeric(paste("0.",`customer Y`,"1",sep = "")),
+       CartesianDistance = sqrt((`store X`-`customer X`)^2 + (`store Y`-`customer Y`)^2)) %>%
+       rowwise() %>% 
+       mutate(GeoDist = distHaversine(c(CustLon, CustLat), c(storeLon, storeLat)))
+
+```
+
+Retail Price {data-navmenu="Menu"}
+================================
+
+Row {.tabset}
+-----------------------------------------------------------------------
+  
+### Monthly
+```{r}
+LS %>%
+  group_by(Month) %>%
+  summarize(Avg.Price = mean(`Retail Price`)) %>%
+  ggplot(aes(x = Month, y = Avg.Price, group = 1)) +
+    geom_line() +
+    ggtitle("Monthly Avg. Retail Price (2008)")
+```
+
+### Quarterly
+```{r}
+LS %>%
+  group_by(Quarter) %>%
+  summarize(Avg.Price = mean(`Retail Price`)) %>%
+  ggplot(aes(x = Quarter, y = Avg.Price, group = 1)) +
+  geom_line() +
+  ggtitle("Quarterly Avg. Retail Price (2008)")
+
+```
+
+### Summary Stats
+```{r}
+summary(LS$`Retail Price`)
+```
+
+Row {.tabset} 
+-----------------------------------------------------------------------
+
+### Retail Outlets
+```{r}
+LS %>%
+  group_by(`Store Postcode`) %>%
+  summarize(Avg.Price = mean(`Retail Price`)) %>%
+  ggplot(aes(x = reorder(`Store Postcode`, -Avg.Price), y = Avg.Price, group = 1)) +
+  geom_bar(stat = "identity") +
+  xlab("Store Postcode") +
+  ggtitle("Avg. Retail Price (2008) by Store") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+### Configurations
+```{r}
+LS %>%
+  group_by(Configuration) %>%
+  summarize(Avg.Price = mean(`Retail Price`)) %>%
+  ggplot(aes(x = Configuration, y = Avg.Price, group = 1)) +
+  geom_bar(stat = "identity") +
+  xlab("Configuration") +
+  ggtitle("Avg. Retail Price (2008) by Store")
+```
+
+Locations {data-navmenu="Menu"}
+================================
+
+Column {data-width=650}
+-----------------------------------------------------------------------
+  
+### Store Map
+```{r}
+List <- unique(LS$`Store Postcode`)
+result1 <- postcode_lookup(List[1])
+result2 <- postcode_lookup(List[2])
+result3 <- postcode_lookup(List[3])
+result4 <- postcode_lookup(List[4])
+result5 <- postcode_lookup(List[5])
+result6 <- postcode_lookup(List[6])
+result7 <- postcode_lookup(List[7])
+result8 <- postcode_lookup(List[8])
+result9 <- postcode_lookup(List[9])
+#result10 <- postcode_lookup(List[10])
+result11 <- postcode_lookup(List[11])
+result12 <- postcode_lookup(List[12])
+result13 <- postcode_lookup(List[13])
+result14 <- postcode_lookup(List[14])
+result15 <- postcode_lookup(List[15])
+#result16 <- postcode_lookup(List[16])
+postcodes <- rbind(result1, result2, result3, result4, result5, result6,
+                   result7, result8, result9, result11, result12,
+                   result13, result14, result15)
+
+rm(result1, result2, result3, result4, result5, result6,
+   result7, result8, result9, result10, result16, result11, result12,
+   result13, result14, result15)
+
+Map<- subset(map_data("world")) %>%
+  filter(region == "UK", subregion == "Great Britain")
+
+ggplot()+
+  coord_fixed(1.3) +
+  geom_polygon(data = Map, mapping = aes(x = long, y = lat, group = group),
+               color = "black", fill = "gray") +
+  geom_point(aes(x = longitude, y = latitude), data = postcodes,
+             alpha = 0.4, colour = "red", size = 2)
+
+```
+
+Column { .tabset, data-width=350}
+-----------------------------------------------------------------------
+
+### Distance to Store
+```{r}
+LS %>%
+  group_by(`Store Postcode`) %>%
+  summarize(Avg.Distance = mean(CartesianDistance),
+            Avg.GeoDistance = mean(GeoDist)) %>%
+  ggplot(aes(x = reorder(`Store Postcode`, -Avg.Distance), y = Avg.Distance)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("Store Postcode") +
+  ggtitle("Avg. Distance Traveled by Customer")
+```
+
+### Geo-Distance to Store
+```{r}
+LS %>%
+  group_by(`Store Postcode`) %>%
+  summarize(Avg.Distance = mean(CartesianDistance),
+            Avg.GeoDistance = mean(GeoDist)) %>%
+  ggplot(aes(x = reorder(`Store Postcode`, -Avg.GeoDistance), y = Avg.GeoDistance)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  xlab("Store Postcode") +
+  ggtitle("Avg. Geo-Distance Traveled by Customer (KM)")
+```
+
+
+Configurations {data-navmenu="Menu"}
+================================
+
+```{r}
+LS.config <- LS %>%
+  group_by(`Battery Life (Hours)`, `HD Size (GB)`, `RAM (GB)`,`Processor Speeds (GHz)`,
+           `Integrated Wireless?`,`Bundled Applications?`,`Screen Size (Inches)`) %>%
+  summarize(Avg.Price = mean(`Retail Price`), Count = n())
+```
+
+Column { .tabset}
+-----------------------------------------------------------------------
+
+### Battery Life (Hours)
+```{r}
+LS.config[,c(1,8,9)] %>%
+  ggplot(aes(x = Count, y = Avg.Price, color = as.factor(`Battery Life (Hours)`))) +
+  geom_point() +
+  theme(legend.position = c(0.8, 0.8))
+```
+
+### HD Size
+```{r}
+LS.config[,c(2,8,9)] %>%
+  ggplot(aes(x = Count, y = Avg.Price, color = as.factor(`HD Size (GB)`))) +
+  geom_point() +
+  theme(legend.position = c(0.8, 0.8))
+```
+
+### Process Speed (GHz)
+```{r}
+LS.config[,c(4,8,9)] %>%
+  ggplot(aes(x = Count, y = Avg.Price, color = as.factor(`Processor Speeds (GHz)`))) +
+  geom_point() +
+  theme(legend.position = c(0.8, 0.8))
+```
+
+### Bundled Applications
+```{r}
+LS.config[,c(6,8,9)] %>%
+  ggplot(aes(x = Count, y = Avg.Price, color = as.factor(`Bundled Applications?`))) +
+  geom_point() +
+  theme(legend.position = c(0.8, 0.8))
+```
+
+### Integrated Wireless
+```{r}
+LS.config[,c(5,8,9)] %>%
+  ggplot(aes(x = Count, y = Avg.Price, color = as.factor(`Integrated Wireless?`))) +
+  geom_point() +
+  theme(legend.position = c(0.8, 0.8))
+```
+
+### RAM (GB)
+```{r}
+LS.config[,c(3,8,9)] %>%
+  ggplot(aes(x = Count, y = Avg.Price, color = as.factor(`RAM (GB)`))) +
+  geom_point() +
+  theme(legend.position = c(0.8, 0.8))
+```
+
+### Screen Sizes (inches)
+```{r}
+LS.config[,c(7,8,9)] %>%
+  ggplot(aes(x = Count, y = Avg.Price, color = as.factor(`Screen Size (Inches)`))) +
+  geom_point() +
+  theme(legend.position = c(0.8, 0.8))
+```
+
+
+Column
+-----------------------------------------------------------------------
+
+```{r}
+LS %>%
+  group_by(`Store Postcode`) %>%
+  summarize(Configs = n_distinct(Configuration)) %>%
+  ggplot(aes(x = reorder(`Store Postcode`,-Configs), y = Configs)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  xlab("Store Postcode") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Configs sold per Store")
+```
