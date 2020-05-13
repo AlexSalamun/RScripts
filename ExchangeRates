@@ -6,7 +6,6 @@ library(zoo)
 library(ggplot2)
 library(tidyr)
 library(xts)
-install.packages("padr")
 library(padr)
 
 #create a df for the exchange rates dataset
