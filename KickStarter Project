@@ -1,0 +1,834 @@
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(tidytext)
+library(textcat)
+library(translateR)
+library(tm)
+library(topicmodels)
+library(wordcloud)
+
+### this works but it takes about 20 mins
+dataset1 <- suppressWarnings(stream_in(gzfile("Kickstarter_2019-12-12T03_20_05_306Z.json.gz")))
+data1 <- dataset1$data
+
+#set the column names
+colnames(data1$photo) = paste("photo",colnames(data1$photo), sep = ".")
+colnames(data1$creator) = paste("creator",colnames(data1$creator), sep = ".")
+colnames(data1$location) = paste("location",colnames(data1$location), sep = ".")
+colnames(data1$category) = paste("category",colnames(data1$category), sep = ".")
+colnames(data1$profile) = paste("profile",colnames(data1$profile), sep = ".")
+
+# combine the nested data frames together
+# don't include the creator information to keep data confidential
+data2 <- cbind(data1, data1$photo, data1$location,
+               data1$category, data1$profile)
+
+# drop the original fields and the friends and permissions lists and url fields
+data3 <- data2 %>% subset(select = -c(photo, location, category, profile, creator, 
+                                      permissions, friends, urls))
+colnames(data3)
+
+# use the static_usd_rate to convert currencies to USD
+data3$goal_usd_static <- data3$static_usd_rate*data3$goal
+data3$goal_usd_fx <- data3$fx_rate*data3$goal
+data3$pledged_usd_static <- data3$static_usd_rate*data3$pledged
+data3$pledged_usd_fx <- data3$fx_rate*data3$pledged
+
+# split the category.slug field
+head(data3$category.slug)
+data4 <- separate(data3, col = category.slug, into = c("category.parent","category.main"), sep = "/")
+
+# there are currently 82 columns clean up useless fields
+dim(data4)
+
+# drop the remaining nested data frames
+data5 <- data4 %>% subset(select = -c(location.urls,profile.feature_image_attributes,
+                                      profile.background_image_attributes,category.urls))
+
+# remove all columns that consist of 90% or more NA's
+data6 <- data5[,colSums(is.na(data5))<dim(data5)[1]*0.9]
+
+# remove all columns that contain id, url, and photo
+data7 <- data6[,!grepl("url|id|photo", colnames(data6))]
+
+# now examine the data to remove unnecessary or duplicate data
+# currencies
+data7 %>% select(currency, currency_symbol, currency_trailing_code, current_currency) %>% head()
+data8 <- data7 %>% select(-c(currency_symbol,currency_trailing_code,current_currency))
+
+# goal and pledges
+data8 %>% select(name, goal, goal_usd_fx, goal_usd_static, 
+                 pledged, usd_pledged, pledged_usd_fx, 
+                 pledged_usd_static, converted_pledged_amount) %>% head()
+# since usd_pledged was the field available from the system and it matches the static rate
+# get rid of all fx_rate values
+data9 <- data8 %>% select(-c(goal, goal_usd_fx, pledged, pledged_usd_fx, usd_pledged, 
+                             fx_rate, static_usd_rate, converted_pledged_amount))
+
+# countries 
+length(unique(data9$country))
+length(unique(data9$location.country))
+data9 %>% select(name, country, country_displayable_name, location.country, location.expanded_country, location.slug) %>% head(100)
+# checking the values against the actual kickstarter website shows that 
+# location.country is the field that can be searched
+# get rid of other location info since it's too granular
+data10 <- data9 %>% select(-c(country,country_displayable_name,location.displayable_name,
+                              location.name,location.expanded_country,location.is_root,
+                              location.localized_name,location.name,location.short_name,
+                              location.slug, location.state, location.type))
+colnames(data10)
+
+
+# profiles
+head(data10[, grepl("name|profile", colnames(data10))]) #only thing readable is the profile.state
+unique(data10$profile.state)
+# creating a proportion chart shows that only successful projects have active profiles so it's not helpful
+data10 %>%
+  ggplot(aes(x = state, fill = profile.state)) +
+  geom_bar(position = "fill") + 
+  ylab("proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Profile Proportions")
+data11 <- data10[,!grepl("profile", colnames(data10))]
+
+
+# examine the head of the data to determine if any other fields are duplicates and remove
+head(data11)
+data12 <- data11 %>% select(-c(category.main, category.position, category.color, slug))
+colnames(data12)
+
+# remove backers_count since it contains information that isn't available until the end of the campaign
+data13 <- data12 %>% select(-c(backers_count))
+colnames(data13)
+
+# examine fields that may not have any impact on the dataset
+# disable_communication
+data13 %>%
+  ggplot(aes(x = state, fill = disable_communication)) +
+  geom_bar(position = "fill") + 
+  ylab("proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Disable_communication Proportions")
+# only suspended projects have disabled comms, so remove
+
+# staff_pick
+data13 %>%
+  ggplot(aes(x = state, fill = staff_pick)) +
+  geom_bar(position = "fill") + 
+  ylab("proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Staff Pick Proportions")
+# this looks like a great predictor for successful projects
+
+# is_starrable
+data13 %>%
+  ggplot(aes(x = state, fill = is_starrable)) +
+  geom_bar(position = "fill") + 
+  ylab("proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("is_starrale Proportions")
+# only applies to live projects so remove
+
+# usd_type
+data13 %>%
+  ggplot(aes(x = state, fill = usd_type)) +
+  geom_bar(position = "fill") + 
+  ylab("proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("usd_type Proportions")
+# has good diversity so keep
+
+# spotlight
+data13 %>%
+  ggplot(aes(x = state, fill = spotlight)) +
+  geom_bar(position = "fill") + 
+  ylab("proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("spotlight Proportions")
+# only successful projects have spotlight so remove
+
+# set digits to 2 for USD currency
+options(digits = 2)
+data14 <- data13 %>% select(-c(disable_communication, is_starrable, spotlight))
+
+
+########### date formatting ####################
+
+
+#convert the dates from unix timestamp to "date time" format
+deadline_formatted <- as_datetime(data14$deadline)
+state_changed_at_formatted <- as_datetime(data14$state_changed_at)
+created_at_formmated <- as_datetime(data14$created_at)
+launched_at_formatted <- as_datetime(data14$launched_at)
+
+#add the variables to the table
+data15 <- cbind(data14, deadline_formatted, state_changed_at_formatted,
+               created_at_formmated, launched_at_formatted)
+
+#remove the unformatted variables
+data16 <- data15 %>% select(-c(deadline,state_changed_at,created_at,launched_at))
+
+# more variables
+# calculate difference to get how quickly project was funded
+data16$actual_project_duration <- data16$state_changed_at_formatted-data16$launched_at_formatted
+
+# calculate difference to get how long someone worked on campaign before it went public
+data16$days_from_campaign_to_public <- data16$launched_at_formatted-data16$created_at_formmated
+
+# calculate difference to get how long a project ran for
+data16$expected_project_duration <- data16$deadline_formatted-data16$launched_at_formatted
+
+data16$deadline.day_of_the_week <- weekdays(data16$deadline_formatted)
+data16$state_changed_at.day_of_the_week <- weekdays(data16$state_changed_at_formatted)
+data16$created_at.day_of_the_week <- weekdays(data16$created_at_formmated)
+data16$launched_at.day_of_the_week <- weekdays(data16$launched_at_formatted)
+
+colnames(data17)
+
+
+################ exploratory Analysis #################
+
+data17 <- data16 %>%
+  mutate(year.created = year(created_at_formmated),
+         year.launched = year(launched_at_formatted),
+         year.deadline = year(deadline_formatted),
+         year.funded = ifelse(test = state == 'successful',year(state_changed_at_formatted),NA),
+         fund_var = pledged_usd_static - goal_usd_static,
+         funded = ifelse(state == 'successful', 1, 0))
+
+
+# aggregate pledges by year
+# I took a look at kickstarter and it seems the main timeline is from date launched to deadline date
+data17 %>%
+  group_by(year.launched) %>%
+  summarize(USDPledges = sum(pledged_usd_static), FundedProjects = sum(funded)) %>%
+  ggplot(aes(x = year.launched)) +
+  geom_col(aes(y = FundedProjects, fill = "Funded Projects")) +
+  geom_line(aes(y = USDPledges/30000, color = "USD Pledges"), size = 2) +
+  scale_x_continuous(breaks = seq(2009,2019,1)) +
+  scale_y_continuous(sec.axis = sec_axis(~.*30000, name = "USD Pledges")) + 
+  ggtitle("Total Funded Projects and Pledges per Year") +
+  xlab("Year Launched") +
+  scale_color_manual(values = "blue") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(colour = "Secondary Axis",
+       fill = "Primary Axis")
+
+
+# view projects per category
+data17 %>%
+  count(category.parent) %>%
+  ggplot(aes(x = reorder(category.parent,-n), y = n)) +
+  geom_col(fill = "steelblue") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  xlab("category.parent") +
+  ggtitle("Projects by category.parent")
+
+data17 %>%
+  group_by(location.country) %>%
+  summarize(prop = n(), 
+            total = sum(n()))
+
+
+data18 <- unique(data17)
+data18 %>% 
+  group_by(location.country) %>%
+  summarize(prop = n()/nrow(data18)) %>%
+  arrange(desc(prop))
+
+
+##################### Blurb Analysis into Words and Translation #####################
+
+# the textcat package can help determine the language
+data19 <- data18 %>% mutate(Language = textcat(blurb))
+
+# filter by only top 10 countries
+countries <- data19 %>%
+  count(location.country) %>%
+  arrange(desc(n)) %>%
+  top_n(10)
+data20 <- data19 %>%
+  inner_join(countries)
+
+# view projects per top 10 country
+options(scipen = 999)
+data20 %>%
+  count(location.country) %>%
+  ggplot(aes(x = reorder(location.country,-n), y = n)) +
+  geom_col(fill = "steelblue") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  xlab("location.county") +
+  ggtitle("Projects by location.country") +
+  scale_y_continuous(breaks = seq(0,190000,10000))
+
+data20$funded <- factor(data20$funded)
+
+data20 %>%
+  ggplot(aes(x = location.country, fill = funded)) +
+  geom_bar(position = "fill") + 
+  ylab("proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("country by funded")
+
+# there are 1,842,235 total words in the blurb field
+tidy_blurb <- data20 %>%
+  unnest_tokens(word, blurb) %>%
+  anti_join(stop_words)
+
+# there are only 109,759 distinct words in the blurbs
+blurb_words <- tidy_blurb %>% count(word)
+# remove all Japanese/Chinese symbols and words that contain numbers
+blurb_words <- blurb_words[3609:dim(blurb_words)[1],]
+# remove all wods that contain whitespace or apostrophes
+blurb_words <- blurb_words %>%
+  filter(grepl("[:alpha:]",word)) %>%
+  filter(!grepl("'", word)) %>%
+  filter(!grepl("\\W+",word)) %>%
+  distinct(.keep_all = TRUE)
+# now it is only 74,802 distinct words
+
+# rejoin the words to the main dataset to add the counts field
+tidy.df <- merge(x = tidy_blurb, y = blurb_words, by = "word", all.y = TRUE)
+
+######### translations ##################
+`%notin%` <- Negate(`%in%`)
+
+### if the languages are from the Unites States, United Kingdom, and Australia and not english or scots
+english <- tidy.df %>%
+  filter(location.country %in% c("US","GB","AU") | Language %in% c("english","scots")) %>%
+  mutate(Language = "english")
+
+non_english <- tidy.df %>%
+  filter(location.country %notin% c("US","GB","AU")) %>%
+  filter(Language != c("english","scots"))
+
+unique(non_english$location.country)
+
+# separate columns by language
+spanish <- non_english %>% filter(location.country %in% c("MX","ES") | Language %in% c("spanish","portugues","catalan"))
+french <- non_english %>% filter(location.country %in% c("FR","CA") | Language == "french")
+german <- non_english %>% filter(location.country %in% c("DE") | Language == "germany")
+italian <- non_english %>% filter(location.country %in% c("IT"))
+dutch <- non_english %>% filter(location.country %in% c("NL") | Language == "dutch")
+norwegian <- non_english %>% filter(Language == "norwegian")
+
+spanish$Language <- "spanish"
+french$Language <- "french"
+german$Language <- "german"
+italian$Language <- "italian"
+dutch$Language <- "dutch"
+norwegian$Language <- "norwegian"
+
+spanish_words <- spanish %>% distinct(word)
+french_words <- french %>% distinct(word)
+german_words <- german %>% distinct(word)
+italian_words <- italian %>% distinct(word)
+dutch_words <- dutch %>% distinct(word)
+
+
+############# Using the Google Translate API #######################
+# Implementing the google translate api
+library(translateR)
+library(ggmap)
+api_key = "AIzaSyDiZOTPit21QDrx3U8sI7IKYRIfcPWWSAs"
+register_google(api_key, account_type = "standard")
+has_google_key()
+
+spanish_words <- translate(dataset = spanish_words,
+                           content.field = 'word',
+                           google.api.key = api_key,
+                           source.lang = 'es',
+                           target.lang = 'en')
+
+french_words <- translate(dataset = french_words,
+                          content.field = 'word',
+                          google.api.key = api_key,
+                          source.lang = 'fr',
+                          target.lang = 'en')
+
+german_words <- translate(dataset = german_words,
+                          content.field = 'word',
+                          google.api.key = api_key,
+                          source.lang = 'de',
+                          target.lang = 'en')
+
+italian_words <- translate(dataset = italian_words,
+                           content.field = 'word',
+                           google.api.key = api_key,
+                           source.lang = 'it',
+                           target.lang = 'en')
+
+dutch_words <- translate(dataset = dutch_words,
+                         content.field = 'word',
+                         google.api.key = api_key,
+                         source.lang = 'nl',
+                         target.lang = 'en')
+getGoogleLanguages()
+
+spanish <- merge(x =  spanish, y = spanish_words, all.x = T)
+german <- merge(x =  german, y = german_words, all.x = T)
+french <- merge(x =  french, y = french_words, all.x = T)
+italian <- merge(x =  italian, y = italian_words, all.x = T)
+dutch <- merge(x =  dutch, y = dutch_words, all.x = T)
+
+
+
+all_words <- rbind(spanish,german,french,italian,dutch)
+all_words <- all_words %>% select(-word)
+all_words$word <- all_words$translatedContent
+all_words <- all_words %>% select(-translatedContent)
+
+all_words <- rbind(english, norwegian,all_words)
+
+
+rm(list=setdiff(ls(), c("all_words",
+                        "english",
+                        "spanish","spanish_words",
+                        "french","french_words",
+                        "german","german_words",
+                        "italian","italian_words",
+                        "dutch","dutch_words",
+                        "norwegian",
+                        "tidy.df")))
+
+
+############# Text Analysis of Words ############
+library(tidyverse)
+library(dplyr)
+library(tidytext)
+library(textcat)
+library(ggplot2)
+library(lexicon)
+
+# First let's do an additional pass through of cleaning for the data to get rid of stop words
+textdata <- all_words %>% subset(select = -c(n.x,n.y))
+text.1 <- textdata %>% 
+  anti_join(stop_words)
+
+
+# now I'll use the lexicon package to remove non-real english words
+grady <- data.frame(grady_augmented) %>%
+  mutate(word = as.character(grady_augmented)) %>%
+  subset(select = -grady_augmented)
+text.2 <- text.1 %>%
+  inner_join(grady)
+
+# so this only gives a dataset of 1,173,083 rows of words
+length(unique(text.2$name)) 
+# now there are only 173,173 unique projects remaining this is a loss of 1000 of the total projects
+# this is most likely due to proejcts that didn't use alphabetic characters in their blurb field.
+length(unique(text.2$word)) # there are also only 28000 different words in the data which is a lot of reuse.
+
+
+# now I'll add sentimentality
+loughran <- get_sentiments("loughran")
+text.3 <- text.2 %>% left_join(loughran, all.x = TRUE)
+sum(is.na(text.3$sentiment)) # seeing 1,120,345 records without sentiment
+
+
+# Create some word clouds
+text.count <- text.3 %>% count(word)
+library(wordcloud)
+wordcloud(
+  words = text.count$word,
+  freq = text.count$n,
+  max.words = 30,
+  colors = "red"
+)
+
+text.3 %>%
+  filter(Language != "norwegian") %>%
+  ggplot(aes(x = Language, fill = funded)) +
+  geom_bar(position = "fill") + 
+  ylab("proportion") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Funding by Language")
+
+prop.table(table(text.3$Language))
+
+##################### Bag of Words Text Mining ####################
+
+
+
+
+
+####################### Text Topic Modeling ######################
+load("C:/Users/Alex.salamun/Desktop/COSC6520/Kickstarter Project/TopicModeling.RData")
+
+
+# Document Term Matrices
+txt_dtm <- text.3 %>%
+  count(word, name) %>%
+  cast_dtm(name, word, n)
+# across 173173 projects there are 28470 terms
+# dtm is the input for topic modeling
+
+library(topicmodels)
+# now the challenge is to determine what value of k to use
+# find topics that are different and don't repeat
+#### ****** THIS TAKES ABOUT 10 MINUTES TO RUN
+lda_output <- LDA(
+  txt_dtm,
+  k = 6,
+  method = "Gibbs",
+  control = list(seed = 42)
+)
+glimpse(lda_output)
+lda_topics <- lda_output %>%
+  tidy(matrix = "beta")
+lda_topics %>% arrange(desc(beta))
+
+
+word_probs <- lda_topics %>%
+  group_by(topic) %>%
+  top_n(15, beta) %>%
+  ungroup() %>%
+  mutate(term2 = fct_reorder(term, beta))
+
+ggplot(word_probs, aes(term2, beta, fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+
+# need to determine what the words that occur with high probability in each topic suggest
+
+# identify the stems of the words
+
+text.3$stem <- stemDocument(text.3$word, language="english")
+length(unique(text.3$stem))
+length(unique(text.3$word))
+length(unique(text.3$name))
+
+# use the stems to create a topic model
+stem_dtm <- text.3 %>%
+  count(stem, name) %>%
+  cast_dtm(name, stem, n)
+
+############# Developing a Topic Model #############
+load("C:/Users/Alex.salamun/Desktop/COSC6520/Kickstarter Project/TopicModeling.RData")
+
+### partition the data
+vocab <- text.3 %>% select(stem) %>% distinct()
+
+train.rows <- sample.int(n = nrow(vocab), dim(vocab)[1]*0.5)
+valid.rows <- sample.int(n = nrow(vocab), dim(vocab)[1]*0.5)
+train.text <- data.frame(vocab[train.rows,]) %>% mutate(term = as.character(vocab.train.rows...))
+valid.text <- data.frame(vocab[valid.rows,]) %>% mutate(term = as.character(vocab.valid.rows...))
+
+train.df <- right_join(text.3, train.text, by = c("stem" = "term"))
+valid.df <- right_join(text.3, valid.text, by = c("stem" = "term"))
+
+train_dtm <- train.df %>%
+  count(stem, name) %>%
+  cast_dtm(name,stem, n)
+
+###### Loop through k values to optimize the model ################
+perplexity_score <- as.numeric()
+for (i in 2:20) {
+  mod <- LDA(x=train_dtm, k = i,
+              control=list(alpha = 1, seed=12345))
+  perplexity_score <- cbind(perplexity_score,perplexity(object=mod, newdata=train_dtm))
+}
+
+k <- seq(2,20,1)
+
+# plot perplexities by k value
+models <- data.frame(k, t(perplexity_score)) %>% rename("perplexity" = t.perplexity_score.)
+ggplot(models, aes(x = k, y = perplexity)) +
+  geom_point() +
+  geom_line() +
+  ggtitle("Perplexity Score by k-value") +
+  scale_x_continuous(breaks = seq(2,20,1)) +
+  scale_y_continuous(breaks = seq(898,920,2)) +
+  geom_point(aes(x = k[6], y = perplexity[6]), color = "red", size = 3)
+
+# based on the perplexity scores I'm using k = 4
+# the best k is one that is low but also produce the most minimal amount of topics
+
+################# Analyzing the best model ###############
+mod <- LDA(
+  train_dtm,
+  k = 7, 
+  method = "Gibbs",
+  control = list(seed = 12345, alpha = 1)
+)
+
+
+# the posterior function will give the probabilities of topics for each project
+topic.probs <- posterior(mod)$topics
+max(topic.probs)
+highprob <- terms(mod, threshold = 0.03)
+
+## create word frequencies for the word cloud of each topic
+word_frequencies.1 <- tidy(mod, matrix = "beta") %>%
+  mutate(n = trunc(beta * 10000)) %>%
+  filter(topic == 1)
+word_frequencies.2 <- tidy(mod, matrix = "beta") %>%
+  mutate(n = trunc(beta * 10000)) %>%
+  filter(topic == 2)
+word_frequencies.3 <- tidy(mod, matrix = "beta") %>%
+  mutate(n = trunc(beta * 10000)) %>%
+  filter(topic == 3)
+word_frequencies.4 <- tidy(mod, matrix = "beta") %>%
+  mutate(n = trunc(beta * 10000)) %>%
+  filter(topic == 4)
+word_frequencies.5 <- tidy(mod, matrix = "beta") %>%
+  mutate(n = trunc(beta * 10000)) %>%
+  filter(topic == 5)
+word_frequencies.6 <- tidy(mod, matrix = "beta") %>%
+  mutate(n = trunc(beta * 10000)) %>%
+  filter(topic == 6)
+word_frequencies.7 <- tidy(mod, matrix = "beta") %>%
+  mutate(n = trunc(beta * 10000)) %>%
+  filter(topic == 7)
+
+
+## wordcloud for each topic
+wordcloud(words=word_frequencies.1$term,
+          freq=word_frequencies.1$n,
+          max.words=20,
+          color = "blue")
+wordcloud(words=word_frequencies.2$term,
+          freq=word_frequencies.2$n,
+          max.words=20,
+          color = "red")
+wordcloud(words=word_frequencies.3$term,
+          freq=word_frequencies.3$n,
+          max.words=20,
+          color = "green")
+wordcloud(words=word_frequencies.4$term,
+          freq=word_frequencies.4$n,
+          max.words=20,
+          color = "orange")
+wordcloud(words=word_frequencies.5$term,
+          freq=word_frequencies.5$n,
+          max.words=20,
+          color = "steelblue")
+wordcloud(words=word_frequencies.6$term,
+          freq=word_frequencies.6$n,
+          max.words=20,
+          color = "maroon")
+wordcloud(words=word_frequencies.7$term,
+          freq=word_frequencies.7$n,
+          max.words=20,
+          color = "purple")
+
+# create descriptive charts for each topic
+word_probs <- tidy(mod, matrix = "beta") %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  mutate(term2 = fct_reorder(term, beta))
+
+abstracts <- c("music","technology","literature",
+                     "self-expression", "cultural/social","film","DIY")
+
+word_probs <- word_probs %>%
+  mutate(topic = case_when(
+    topic == 1 ~ abstracts[1],
+    topic == 2 ~ abstracts[2],
+    topic == 3 ~ abstracts[3],
+    topic == 4 ~ abstracts[4],
+    topic == 5 ~ abstracts[5],
+    topic == 6 ~ abstracts[6],
+    topic == 7 ~ abstracts[7]
+  ))
+
+ggplot(word_probs, aes(term2, beta, fill = as.factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip() +
+  xlab("") +
+  ylab("")
+
+lda_agg <- tidy(mod, "gamma") %>%
+  group_by(document) %>%
+  summarize(Best = max(gamma))
+
+
+# identify the best topics for each project
+project_probs <- tidy(mod, matrix = "gamma") %>%
+  group_by(topic) %>%
+  top_n(10, gamma)
+project_probs <- tidy(mod, matrix = "gamma") %>%
+  spread(topic, gamma)
+
+project_probs$Topic = as.factor(colnames(project_probs)[apply(project_probs,1,which.max)])
+
+project_probs %>%
+  group_by(Topic) %>%
+  filter(Topic != "document") %>%
+  summarize(Projects = n()) %>%
+  ggplot(aes(x = "", y = Projects, fill = Topic)) +
+  geom_bar(width = 2, stat = "identity") +
+  ggtitle("Number of Projects per Topic") +
+  coord_polar("y", start = 0) +
+  xlab("") +
+  ylab("")
+
+
+# test the accuracy of the topic model
+valid_dtm <- valid.df %>%
+  count(stem, name) %>%
+  cast_dtm(name, stem, n)
+
+results <- posterior(object=mod, newdata=valid_dtm)
+
+# Display the matrix with topic probabilities
+test <- results$topics
+project_test <-  as.factor(colnames(test)[apply(test,1,which.max)])
+test_results <- data.frame(projects = rownames(test), 
+                           topic = project_test,
+                           stringsAsFactors = F)
+
+# merge train with test data
+combo <- project_probs %>%
+  inner_join(y = test_results, by = c("document" = "projects")) %>%
+  subset(select = -c(2:8)) %>%
+  filter(Topic != "document") %>%
+  droplevels()
+
+library(caret)
+confusionMatrix(combo$Topic, combo$topic)
+
+
+##################### Using a Logistic Regression model ###########################
+# First run the model across the entire dtm of words [stem_dtm]
+total_results <- posterior(object = mod, newdata = stem_dtm)
+total_topics <- total_results$topics
+project_total <- as.factor(colnames(total_topics)[apply(total_topics,1,which.max)])
+project_topics_all <- data.frame(Projects = rownames(total_topics),
+                                 Topics = project_total,
+                                 stringsAsFactors = F)
+
+all_data <- left_join(x = text.3, 
+                  y =  project_topics_all, 
+                  by = c("name" = "Projects"),
+                  all.x = TRUE)
+
+# because there are over 16000 stems in the dataset
+# I only want to examine the most common words for logistic regression
+# Taking the top 200 words still covers 90% of projects in the dataset
+common <- all_data %>%
+  count(stem) %>%
+  top_n(200)
+coverage <- right_join(all_data, common, by = "stem")
+length(unique(coverage$name))/length(unique(all_data$name))
+
+coverage <- coverage %>% select(stem, Topics, funded)
+
+set.seed(12345)
+train.glm <- sample.int(n = nrow(coverage), dim(coverage)[1]*0.6)
+train.data <- coverage[train.glm, ]
+valid.data <- coverage[-train.glm, ]
+
+log.mod <- glm(formula = funded ~ ., data = train.data, family = "binomial")
+
+train.fit <- predict(log.mod, train.data, type = "response")
+valid.pred <- predict(log.mod, valid.data, type = "response")
+
+library(caret)
+confusionMatrix(as.factor(ifelse(train.fit>0.6,1,0)),train.data$funded)
+confusionMatrix(as.factor(ifelse(valid.pred>0.5,1,0)),valid.data$funded)
+
+# both the fit and the predicted accuracy are about 61%
+# Setting the cutoff at 0.4 gives a specificity of 95% for both as well
+
+####### Make a the lift chart ########3
+library(gains)
+gains <- gains(ifelse(valid.data$funded=="1",1,0), valid.pred, groups = 2)
+plot(c(0,gains$cume.pct.of.total*sum(valid.data$funded=="1"))~c(0,gains$cume.obs),
+     xlab = "x of cases", ylab ="Cumulative", main="lift chart for EBay classification tree", type="l")
+lines(c(0,sum(valid.data$funded=="1"))~c(0, dim(valid.data)[1]), lty=2)
+
+# decile-wise lift chart
+funded <- ifelse(valid.data$funded=="1",1,0)
+barplot(gains$mean.resp/mean(funded), names.arg = gains$depth,
+        xlab = "Percentile", ylab = "Mean Response", main = "Decile-Wise Lift Chart")
+
+
+### Second use the topics as predictors
+coefficients <- data.frame(predictor = rownames(coef(log.mod)),
+                           value = coef(log.mod)) %>% arrange(desc(coef.log.mod.))
+
+c <- data.frame(coef(log.mod))
+coefficients <- data.frame(predictors = rownames(c),
+                           value = c$coef.log.mod.) %>%
+  filter(predictors != "(Intercept)") %>%
+  arrange(desc(value)) %>%
+  droplevels()
+
+
+positive <- data.frame(stems = substr(coefficients$predictors[which(coefficients$value > 0)],
+                              start = 5,
+                              stop = length(coefficients$predictors)),
+                       value = coefficients$value[which(coefficients$value > 0)],
+                       stringsAsFactors = F)
+negative <- data.frame(stems = substr(coefficients$predictors[which(coefficients$value < 0)],
+                              start = 5,
+                              stop = length(coefficients$predictors)),
+                       value = coefficients$value[which(coefficients$value < 0)],
+                       stringsAsFactors = F)
+View(positive)
+
+wordcloud(
+  words = positive$stem,
+  freq = positive$value,
+  max.words = 20,
+  colors = "blue"
+)
+
+
+########## Identify words by topic ##############
+lda_mod <- LDA(
+  stem_dtm,
+  k = 7,
+  method = "Gibbs",
+  control = list(seed = 12345, alpha = 1)
+)
+
+
+word_probs <- tidy(lda_mod, matrix = "beta") %>%
+  spread(topic, beta)
+
+word_probs$Topic = as.factor(colnames(word_probs)[apply(word_probs,1,which.max)])
+
+color.df <- data.frame(Topic = as.factor(c(1,2,3,4,5,6,7)),
+             colorlist = c("red","goldenrod","chartreuse4","lightseagreen","deepskyblue","purple","deeppink"),
+             stringsAsFactors = F)
+
+positive.1 <- positive %>%
+  left_join(y = word_probs, by = c("stems" = "term")) %>%
+  left_join(y = color.df, by = "Topic") %>%
+  subset(select = -c(3:9)) %>%
+  filter(stems != "hard")
+
+wordcloud(
+  words = positive.1$stem,
+  freq = positive.1$value,
+  max.words = 20,
+  colors = positive.1$colorlist
+)
+
+negative.1 <- negative %>%
+  left_join(y = word_probs, by = c("stems" = "term")) %>%
+  left_join(y = color.df, by = "Topic") %>%
+  subset(select = -c(3:9)) %>%
+  filter(stems != "hard") %>%
+  na.omit() %>%
+  mutate(value = -1000*value)
+
+wordcloud(
+  words = negative.1$stem,
+  freq = negative.1$value,
+  max.words = 20,
+  colors = negative.1$colorlist
+)
+
+
+
+
